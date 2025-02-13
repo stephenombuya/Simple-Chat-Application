@@ -2,77 +2,93 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <pthread.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 
 #define PORT 8080
 #define BUFFER_SIZE 1024
+#define MAX_CLIENTS 5
 
-void error(char *msg) {
+void error(const char *msg) {
     perror(msg);
-    exit(1);
+    exit(EXIT_FAILURE);
+}
+
+void trim_newline(char *str) {
+    size_t len = strlen(str);
+    if (len > 0 && str[len - 1] == '\n') {
+        str[len - 1] = '\0';
+    }
+}
+
+void *handle_client(void *client_socket) {
+    int sock = *(int *)client_socket;
+    char buffer[BUFFER_SIZE];
+
+    printf("Client connected\n");
+
+    while (1) {
+        memset(buffer, 0, BUFFER_SIZE);
+        if (recv(sock, buffer, BUFFER_SIZE, 0) <= 0) {
+            printf("Client disconnected\n");
+            break;
+        }
+
+        printf("Client: %s\n", buffer);
+
+        printf("Server: ");
+        fgets(buffer, BUFFER_SIZE, stdin);
+        trim_newline(buffer);
+
+        if (send(sock, buffer, strlen(buffer), 0) < 0) {
+            error("Error sending message");
+        }
+    }
+
+    close(sock);
+    free(client_socket);
+    return NULL;
 }
 
 int main() {
-    int server_sock, client_sock;
+    int server_sock, *client_sock;
     struct sockaddr_in server_addr, client_addr;
     socklen_t client_len = sizeof(client_addr);
-    char buffer[BUFFER_SIZE];
+    pthread_t thread_id;
 
-    // Create socket
     server_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (server_sock < 0) {
         error("Error opening socket");
     }
 
-    // Initialize server address structure
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(PORT);
 
-    // Bind socket
     if (bind(server_sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
         error("Error binding socket");
     }
 
-    // Listen for connections
-    listen(server_sock, 5);
+    if (listen(server_sock, MAX_CLIENTS) < 0) {
+        error("Error listening for connections");
+    }
+
     printf("Server listening on port %d...\n", PORT);
 
-    // Accept connection
-    client_sock = accept(server_sock, (struct sockaddr *)&client_addr, &client_len);
-    if (client_sock < 0) {
-        error("Error accepting connection");
-    }
-
-    printf("Client connected\n");
-
-    // Chat loop
     while (1) {
-        // Clear buffer
-        memset(buffer, 0, BUFFER_SIZE);
-
-        // Receive message
-        if (recv(client_sock, buffer, BUFFER_SIZE, 0) <= 0) {
-            printf("Client disconnected\n");
-            break;
+        client_sock = malloc(sizeof(int));
+        *client_sock = accept(server_sock, (struct sockaddr *)&client_addr, &client_len);
+        if (*client_sock < 0) {
+            free(client_sock);
+            error("Error accepting connection");
         }
 
-        printf("Client: %s", buffer);
-
-        // Get server response
-        printf("Server: ");
-        fgets(buffer, BUFFER_SIZE, stdin);
-
-        // Send response
-        if (send(client_sock, buffer, strlen(buffer), 0) < 0) {
-            error("Error sending message");
-        }
+        pthread_create(&thread_id, NULL, handle_client, (void *)client_sock);
+        pthread_detach(thread_id);
     }
 
-    // Close sockets
-    close(client_sock);
     close(server_sock);
     return 0;
 }
